@@ -4,134 +4,159 @@ from dotenv import load_dotenv
 import os
 import ast
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# from langchain_openai import OpenAIEmbeddings, OpenAI
-# from openai import AzureOpenAI 
-from langchain_community.chat_models import AzureChatOpenAI
+from langchain_openai import OpenAIEmbeddings, OpenAI
 from langchain_core.prompts import PromptTemplate
-# from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import AzureOpenAIEmbeddings
+from langchain_openai import AzureOpenAIEmbeddings,AzureChatOpenAI
 from langchain_chroma import Chroma
 load_dotenv()
-# openai_api = OpenAI()
-azure_endpoint = os.getenv("OPENAI_API_ENDPOINT")
-api_key = os.getenv("OPENAI_API_KEY")
-api_version = "2023-03-15-preview"
-deployment_name = "gpt-4o"  # Make sure this matches your deployment name in Azure
-# Initialize OpenAI embeddings
-embeddings = AzureOpenAIEmbeddings( 
-    azure_endpoint=azure_endpoint,
-    # api_key=api_key,
-    # api_version=api_version,
+
+api_type = 2 # 1 - Azure OpenAI, 2- OpenAI
+
+if api_type == 1:
+    # Load environment variables
+    azure_endpoint = os.getenv("Azure_API_ENDPOINT")
+    api_key = os.getenv("AZURE_API_KEY")
+    api_version = "2023-03-15-preview"
+    deployment_name = "gpt-4o"  # Ensure this matches your deployment name in Azure
+
+    # Initialize embeddings and model
+    embeddings = AzureOpenAIEmbeddings(azure_endpoint=azure_endpoint,api_key=api_key)
+    llm = AzureChatOpenAI(
+        azure_endpoint=azure_endpoint,
+        api_key=api_key,
+        api_version=api_version,
+        model=deployment_name,
+        temperature=1,
+        max_tokens=300,
     )
+else:
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    embeddings = OpenAIEmbeddings()
+    llm = OpenAI(max_tokens=300)
 
-# Initialize LangChain's AzureOpenAI model
-llm = AzureChatOpenAI(
-    azure_endpoint=azure_endpoint,
-    api_key=api_key,
-    api_version=api_version,
-    model=deployment_name,
-    temperature=1,
-    max_tokens=300,
-)
 
-# Open the PDF file
-pdf_path = 'data/World-Vision-Canada-FY23-Annual-Results-Report.pdf'  # Replace with the path to your PDF file
-doc = fitz.open(pdf_path)
-
-# Step 1: Extract text from the first 5 pages (assuming TOC is in these pages)
-toc_content = ""
-for page_num in range(5):  # First 5 pages
-    page = doc[page_num]
-    toc_content += page.get_text()
-# print(toc_content)
-
-# Create the prompt template to check for a table of contents
-prompt_template = """
-The following text may contain a Table of Contents (TOC). Please analyze the content and determine if a TOC is present. whole toc content as below sample format. Fromat the start and end page number as integer don't do any hallucinated values this page number is very important. if title has multiple subtiles don't make that page number seperate.
-understand in a table of content Captial letters are the main headings under that title if any lower case letters are sub headings. so titles with subheadings don't set as same page number. Example PROGRESS AND CHANGE start at 24 but under that are subheadings so it consider as start and end as before the subheadings start.
- TOC is found, return it in the following format without any additional text and, also dont't add any \n values ::
-[
-    ("SECTION NAME", start_page_number, end_page_number),
-    ...
-]
-If no TOC is present, return "No".
-
-Text to analyze:
-
-{toc_content}
-
-Answer:
-"""
-
-# Create a PromptTemplate with the prompt and `toc_content` variable
-prompt = PromptTemplate(input_variables=["toc_content"], template=prompt_template)
-
-# Create an LLMChain with the prompt and model
-chain = prompt | llm
-# # Run the chain with the extracted TOC content
-response = chain.invoke({"toc_content": toc_content})
-toc_content = response.content
-toc_list = ast.literal_eval(toc_content)
-doc.close()
-
-# Create an empty DataFrame to store the extracted content
-df = pd.DataFrame(columns=["Topic", "Content", "Start Page", "End Page"])
-
-# Open the PDF file
-pdf_path = 'data/World-Vision-Canada-FY23-Annual-Results-Report.pdf'  # Replace with the path to your PDF file
-doc = fitz.open(pdf_path)
-for topic, start_page, end_page in toc_list:
-    print(topic, start_page, end_page)
-    content = ""
-    for page_num in range(start_page - 1, end_page):  # Page numbering in PyMuPDF starts at 0
+# Step 1: Define function to extract TOC and split text
+def extract_toc_from_pdf(pdf_path):
+    # Open the PDF file
+    doc = fitz.open(pdf_path)
+    toc_content = ""
+    
+    # Extract text from the first 5 pages (assuming TOC is in these pages)
+    for page_num in range(5):  # First 5 pages
         page = doc[page_num]
-        content += page.get_text()  # Extract text from the page and accumulate for the topic
+        toc_content += page.get_text()
+
+    # Create the prompt template to check for a table of contents
+    prompt_template = """
+    The following text may contain a Table of Contents (TOC). Please analyze the content and determine if a TOC is present. whole toc content as below sample format. Format the start and end page number as integer. 
+    Capital letters are the main headings, and lower case letters are subheadings. Titles with subheadings shouldn't be set to the same page number.
     
-    # Create a new DataFrame row with the topic, content, start and end page
-    new_row = pd.DataFrame({"Topic": [topic], 
-                            "Content": [content], 
-                            "Start Page": [start_page], 
-                            "End Page": [end_page]})
+    TOC is found, return it in the following format without any additional text and without any \n values ::
+    [
+        ("SECTION NAME", start_page_number, end_page_number),
+        ...
+    ]
+    If no TOC is present, return "No".
+
+    Text to analyze:
+    {toc_content}
+
+    Answer:
+    """
+
+    # Create the PromptTemplate with the extracted TOC content
+    prompt = PromptTemplate(input_variables=["toc_content"], template=prompt_template)
+
+    # Create an LLMChain with the prompt and model
+    chain = prompt | llm
+
+    # Run the chain with the extracted TOC content
+    response = chain.invoke({"toc_content": toc_content})
+    print(response)
+    if api_type == 1:
+        toc_content = response.content
+    else:
+        toc_content = response
+    toc_list = ast.literal_eval(toc_content)
+    doc.close()
     
-    # Append the new row using pd.concat
-    df = pd.concat([df, new_row], ignore_index=True)
+    return toc_list
 
-# Close the PDF file
-doc.close()
 
-# Display the DataFrame
-print(df)
-
-# Text Splitter to break content into smaller chunks
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-
-# Chroma vector store initialization (this will store data in the directory you specify)
-persist_directory = "./chroma_db"  # The directory where the database will be saved
-db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
-
-# Process the DataFrame rows
-def process_row(row):
-    topic = row["Topic"]
-    content = row["Content"]
+# Step 2: Function to process PDF and add text to Chroma DB
+def process_pdf(pdf_path, toc_list):
+    # Create an empty DataFrame to store the extracted content
+    df = pd.DataFrame(columns=["Topic", "Content", "Start Page", "End Page"])
     
-    # Split the content into chunks first
-    chunks = text_splitter.split_text(content)
-
-    # Add the topic to every chunk
-    chunks_with_topic = [f"{topic}: {chunk}" for chunk in chunks]
-
-    # Return the chunks with the topic added
-    return chunks_with_topic
-
-# Process each row and store results in Chroma DB
-for idx, row in df.iterrows():
-    chunks_with_topic = process_row(row)
+    # Open the PDF file
+    doc = fitz.open(pdf_path)
     
-    # Store chunks with metadata (topic, pages) in Chroma
-    for chunk in chunks_with_topic:
-        db.add_texts([chunk], metadatas=[{"topic": row["Topic"], "start_page": row["Start Page"], "end_page": row["End Page"]}])
+    # Extract content based on TOC
+    for topic, start_page, end_page in toc_list:
+        content = ""
+        for page_num in range(start_page - 1, end_page):  # Page numbering in PyMuPDF starts at 0
+            page = doc[page_num]
+            content += page.get_text()  # Extract text from the page and accumulate for the topic
+        
+        # Create a new DataFrame row with the topic, content, start and end page
+        new_row = pd.DataFrame({
+            "Topic": [topic],
+            "Content": [content],
+            "Start Page": [start_page],
+            "End Page": [end_page]
+        })
+        
+        # Append the new row using pd.concat
+        df = pd.concat([df, new_row], ignore_index=True)
 
-# Save the Chroma vector store (No need for persist())
-# Chroma automatically persists in the specified directory. You can access it later.
-print(f"Chroma DB stored at: {persist_directory}")
+    doc.close()
+    
+    # Text Splitter to break content into smaller chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+
+    # Chroma vector store initialization (this will store data in the directory you specify)
+    persist_directory = f"./chroma_db/{os.path.splitext(os.path.basename(pdf_path))[0]}"  # Create a folder per file
+    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+
+    # Process the DataFrame rows and store in Chroma DB
+    def process_row(row):
+        topic = row["Topic"]
+        content = row["Content"]
+        
+        # Split the content into chunks
+        chunks = text_splitter.split_text(content)
+        
+        # Add the topic to every chunk
+        chunks_with_topic = [f"{topic}: {chunk}" for chunk in chunks]
+        
+        return chunks_with_topic
+
+    # Process each row and store results in Chroma DB
+    for idx, row in df.iterrows():
+        chunks_with_topic = process_row(row)
+        
+        # Store chunks with metadata (topic, pages) in Chroma
+        for chunk in chunks_with_topic:
+            db.add_texts([chunk], metadatas=[{"topic": row["Topic"], "start_page": row["Start Page"], "end_page": row["End Page"]}])
+
+    # Save the Chroma vector store (it persists automatically in the specified directory)
+    print(f"Chroma DB for {os.path.basename(pdf_path)} stored at: {persist_directory}")
+
+# Step 3: Loop through all PDF files in the 'data' folder
+data_folder = 'data'
+pdf_files = [f for f in os.listdir(data_folder) if f.endswith('.pdf')]
+
+# Process each PDF file
+for pdf_file in pdf_files:
+    pdf_path = os.path.join(data_folder, pdf_file)
+    print(f"Processing {pdf_path}...")
+    
+    # Step 3.1: Extract TOC
+    toc_list = extract_toc_from_pdf(pdf_path)
+    print(toc_list)
+    if toc_list != "No":
+        # Step 3.2: Process PDF and add to Chroma DB
+        process_pdf(pdf_path, toc_list)
+    else:
+        print(f"No TOC found in {pdf_path}, skipping...")
 
