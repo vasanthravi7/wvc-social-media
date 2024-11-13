@@ -1,0 +1,17 @@
+crewai
+crewai_tools
+openai
+streamlit
+langsmith
+langchain
+langchain-community
+chromadb
+PyPDF2
+python-dotenv
+openai
+pypdf
+tiktoken
+langchain-openai 
+langchain-chroma
+fitz
+PyMuPDF
