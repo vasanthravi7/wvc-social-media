@@ -4,23 +4,21 @@ from crewai import Agent, Task, Crew, Process
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, OpenAI
 from crewai_tools import tool
-from langchain_openai import AzureOpenAIEmbeddings,AzureChatOpenAI
+from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 from crewai import LLM
 
 # Load environment variables
 load_dotenv()
 
-api_type = 2 # 1 - Azure OpenAI, 2- OpenAI
+# API Type Configuration
+api_type = 2  # 1 - Azure OpenAI, 2 - OpenAI
 
 if api_type == 1:
-    # Load environment variables
     azure_endpoint = os.getenv("Azure_API_ENDPOINT")
     api_key = os.getenv("AZURE_API_KEY")
     api_version = "2023-03-15-preview"
-    deployment_name = "gpt-4o"  # Ensure this matches your deployment name in Azure
-
-    # Initialize embeddings and model
-    embeddings = AzureOpenAIEmbeddings(azure_endpoint=azure_endpoint,api_key=api_key)
+    deployment_name = "gpt-4o"
+    embeddings = AzureOpenAIEmbeddings(azure_endpoint=azure_endpoint, api_key=api_key)
     llm = AzureChatOpenAI(
         azure_endpoint=azure_endpoint,
         api_key=api_key,
@@ -36,8 +34,6 @@ else:
 
 # Define paths and parameters
 persistent_directory = "./chroma_db/World-Vision-Canada-FY23-Annual-Results-Report"
-
-# Step 1: Load the existing Chroma DB instance
 chroma_db = Chroma(
     persist_directory=persistent_directory,
     embedding_function=embeddings
@@ -47,93 +43,119 @@ chroma_db = Chroma(
 @tool
 def query_chroma_db(query_text: str) -> str:
     """
-    This function retrieves relevant chunks from Chroma DB using a semantic search
+    Retrieves relevant chunks from Chroma DB using a semantic search
     based on the input query_text.
+
+    Args:
+        query_text (str): The text to query Chroma DB with.
+
+    Returns:
+        str: Formatted results from the Chroma DB, containing relevant chunks.
     """
     # Perform a similarity search in Chroma DB
     results = chroma_db.similarity_search(query_text, k=10)  # Retrieve top 10 relevant chunks
     
     # Extract 'page_content' from each Document in results
-    if isinstance(results, list):
-        formatted_results = "\n\n".join([doc.page_content for doc in results if hasattr(doc, 'page_content')])
-    else:
-        formatted_results = "No results found or invalid format."
-    print("here")
-    print(formatted_results)
+    formatted_results = "\n\n".join([doc.page_content for doc in results if hasattr(doc, 'page_content')])
+    
     return formatted_results
 
-# Agent to retrieve relevant data from Chroma DB
+# Data Retrieval Agent
 data_retriever = Agent(
     role="Data Researcher",
     goal="Retrieve relevant information about the blog topic from the Chroma vector database.",
     verbose=True,
     memory=True,
-    backstory="You're adept at quickly locating relevant content and insights.",
+    backstory="An AI specialized in locating relevant research and information from a vast Chroma DB.",
     tools=[query_chroma_db]
 )
 
-# Agent to write the blog post based on retrieved data and reference sample_blog.txt
+# Blog Writing Agent
 blog_writer = Agent(
     role="Blog Writer",
     goal="Write an informative blog post using the retrieved data from Chroma DB and referencing sample_blog.txt.",
     verbose=True,
     memory=True,
-    backstory="You craft insightful and engaging articles, making complex information easy to understand.",
-    # llm = llm
+    backstory="An AI writer proficient in crafting insightful blog posts that clarify complex topics."
 )
 
-# Define the retrieval task for data collection
-retrieval_task = Task(
-    description=(
-        "Search the Chroma database for information relevant to {blog_topic}. "
-        "Collect and organize insights to support the creation of a blog post."
+# Instagram Conversion Agent
+instagram_converter = Agent(
+    role="Instagram Post Creator",
+    goal=(
+        "Convert the blog post to an engaging Instagram post. "
+        "Make it short, visually appealing, and use emojis and hashtags appropriately. "
+        "Ensure it aligns with the style in sample_instagram.txt."
     ),
-    expected_output="A collection of summarized insights and examples related to {blog_topic}.",
+    verbose=True,
+    memory=True,
+    backstory="A creative AI specializing in summarizing blogs into visually appealing Instagram posts."
+)
+
+# LinkedIn Conversion Agent
+linkedin_converter = Agent(
+    role="LinkedIn Post Creator",
+    goal=(
+        "Convert the blog post to a professional LinkedIn post. "
+        "Focus on detailed insights and a polished tone with minimal use of emojis. "
+        "Ensure it aligns with the style in sample_linkedin.txt."
+    ),
+    verbose=True,
+    memory=True,
+    backstory="A professional AI that distills blog content into insightful LinkedIn posts."
+)
+
+# Define tasks
+retrieval_task = Task(
+    description="Retrieve information relevant to {blog_topic} from Chroma DB.",
+    expected_output="Summarized insights related to {blog_topic}.",
     agent=data_retriever
 )
 
-# Define the writing task for blog generation
 writing_task = Task(
-    description=(
-        "Use the gathered information to write a comprehensive blog post on {blog_topic}. "
-        "Structure the blog to include an introduction, main insights, and a conclusion. "
-        "Use 'sample_blog.txt' for reference."
-    ),
-    expected_output="A blog post in Markdown format covering the topic {blog_topic}.",
+    description="Write a comprehensive blog post on {blog_topic}.",
+    expected_output="A Markdown blog post on {blog_topic}.",
     agent=blog_writer,
     async_execution=False,
-    output_file="outputs/blog_{chroma_collection_name}.txt"  # Dynamically store output in the outputs folder
+    output_file="outputs/blog_{chroma_collection_name}.txt"
 )
 
-# Assemble the Crew with a sequential process
+instagram_task = Task(
+    description="Convert the blog post to an Instagram-friendly format.",
+    expected_output="Instagram post text based on the blog content.",
+    agent=instagram_converter,
+    async_execution=False,
+    output_file="outputs/instagram_post_{chroma_collection_name}.txt"
+)
+
+linkedin_task = Task(
+    description="Convert the blog post to a LinkedIn-friendly format.",
+    expected_output="LinkedIn post text based on the blog content.",
+    agent=linkedin_converter,
+    async_execution=False,
+    output_file="outputs/linkedin_post_{chroma_collection_name}.txt"
+)
+
+# Assemble Crew with a sequential process
 crew = Crew(
-    agents=[data_retriever, blog_writer],
-    tasks=[retrieval_task, writing_task],
-    process=Process.sequential  # Ensures retrieval is completed before writing
+    agents=[data_retriever, blog_writer, instagram_converter, linkedin_converter],
+    tasks=[retrieval_task, writing_task, instagram_task, linkedin_task],
+    process=Process.sequential
 )
 
-# Function to generate the file path dynamically based on Chroma DB collection name
-def generate_output_file_path(collection_name: str) -> str:
-    # Construct the path with the dynamic file name using the collection name
-    return os.path.join("outputs", f"blog_{collection_name}.txt")
+# Function to dynamically generate file path
+def generate_output_file_path(collection_name: str, file_type: str) -> str:
+    return os.path.join("outputs", f"{file_type}_{collection_name}.txt")
 
-# Execute the crew on a specified topic
+# Execute the Crew
 if __name__ == "__main__":
-    blog_topic = "Laila overview"  # Example blog topic
-    collection_name = persistent_directory.split('/')[-1]  # Get the last part of the persistent directory for collection name
-    output_file_path = generate_output_file_path(collection_name)  # Generate the file path based on collection name
-
-    # Update the writing task to use the dynamically generated file path
-    writing_task.output_file = output_file_path
+    blog_topic = "Laila overview"
+    collection_name = persistent_directory.split('/')[-1]
+    writing_task.output_file = generate_output_file_path(collection_name, "blog")
+    instagram_task.output_file = generate_output_file_path(collection_name, "instagram_post")
+    linkedin_task.output_file = generate_output_file_path(collection_name, "linkedin_post")
     
     # Kick off the crew process
     result = crew.kickoff(inputs={'blog_topic': blog_topic})
     
-    # Convert result to string
-    result_text = str(result)  # Convert CrewOutput to string, or access specific attributes if necessary
-    
-    # Save the result to the dynamically generated output path
-    with open(output_file_path, "w") as f:
-        f.write(result_text)  # Write output to the dynamically named file
-    
-    print(f"Blog post written to {output_file_path}")
+    print(f"Output files generated in the 'outputs' directory.")
