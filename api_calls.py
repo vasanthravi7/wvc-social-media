@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process
 from langchain_chroma import Chroma
@@ -8,6 +8,12 @@ from langchain_openai import OpenAIEmbeddings, OpenAI
 from crewai_tools import tool
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 from crewai import LLM
+import torch
+from transformers import CLIPProcessor, CLIPModel
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+from PIL import Image
+import base64
 app = Flask(__name__)
 
 # Load environment variables
@@ -236,5 +242,124 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 
+# Load models
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+text_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Function to recursively list all subfolders
+def list_subfolders(base_folder="images"):
+    subfolders = []
+    for root, dirs, _ in os.walk(base_folder):
+        for dir_name in dirs:
+            subfolder_path = os.path.join(root, dir_name)
+            subfolders.append(subfolder_path)
+    return subfolders
+
+# Find the most relevant subfolder based on query
+def find_relevant_subfolder(query, subfolders):
+    folder_names = [os.path.basename(subfolder) for subfolder in subfolders]
+    query_embedding = text_model.encode([query])
+    subfolder_embeddings = text_model.encode(folder_names)
+    similarities = cosine_similarity(query_embedding, subfolder_embeddings)
+    best_match_idx = similarities.argmax()
+    return subfolders[best_match_idx]  # Return full path of the best match
+
+# Embed all images in the subfolder using CLIP
+def embed_images_in_folder(folder_path):
+    image_embeddings = []
+    image_files = []
+    for file_name in os.listdir(folder_path):
+        if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            image_path = os.path.join(folder_path, file_name)
+            image = Image.open(image_path)
+            inputs = clip_processor(images=image, return_tensors="pt")
+            with torch.no_grad():
+                image_embeds = clip_model.get_image_features(**inputs)
+            image_embeddings.append(image_embeds)
+            image_files.append(image_path)
+    image_embeddings = torch.vstack(image_embeddings)
+    return image_files, image_embeddings
+
+# Embed query and find the most relevant images
+def get_query_embedding(query):
+    inputs = clip_processor(text=query, return_tensors="pt")
+    with torch.no_grad():
+        query_embedding = clip_model.get_text_features(**inputs)
+    return query_embedding
+
+def find_top_n_images(query, folder, top_n=2):
+    image_files, image_embeddings = embed_images_in_folder(folder)
+    query_embedding = get_query_embedding(query)
+    similarities = cosine_similarity(query_embedding.numpy(), image_embeddings.numpy())
+    top_n_indices = similarities.argsort()[0][-top_n:][::-1]
+    top_images = [image_files[i] for i in top_n_indices]
+    return top_images
+
+# Get the highest quality image
+def get_highest_quality_image(images):
+    best_image = None
+    max_pixels = 0
+    for image_path in images:
+        image = Image.open(image_path)
+        pixels = image.width * image.height
+        if pixels > max_pixels:
+            max_pixels = pixels
+            best_image = image_path
+    return best_image
+
+# Flask API Endpoints
+@app.route('/highest-quality-image', methods=['GET'])
+def highest_quality_image():
+    query = request.args.get('query')
+    base_folder = "images"
+
+    if not query:
+        return jsonify({"error": "Query parameter is required"}), 400
+
+    # Step 1: List all subfolders
+    subfolders = list_subfolders(base_folder)
+    
+    # Step 2: Find the most relevant subfolder
+    relevant_subfolder = find_relevant_subfolder(query, subfolders)
+    
+    # Step 3: Get top images and find the highest-quality one
+    top_images = find_top_n_images(query, relevant_subfolder)
+    highest_quality_image = get_highest_quality_image(top_images)
+
+    if highest_quality_image:
+        # Open the image and convert it to a base64 string
+        with open(highest_quality_image, "rb") as image_file:
+            image_data = image_file.read()
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            # Create a data URL for the image
+            image_extension = highest_quality_image.split('.')[-1]
+            image_url = f"data:image/{image_extension};base64,{base64_image}"
+        return jsonify({"highest_quality_image": image_url})
+    else:
+        return jsonify({"error": "No images found"}), 404
+
+@app.route('/download-highest-quality-image', methods=['GET'])
+def download_highest_quality_image():
+    query = request.args.get('query')
+    base_folder = "images"
+
+    if not query:
+        return jsonify({"error": "Query parameter is required"}), 400
+
+    # Step 1: List all subfolders
+    subfolders = list_subfolders(base_folder)
+    
+    # Step 2: Find the most relevant subfolder
+    relevant_subfolder = find_relevant_subfolder(query, subfolders)
+    
+    # Step 3: Get top images and find the highest-quality one
+    top_images = find_top_n_images(query, relevant_subfolder)
+    highest_quality_image = get_highest_quality_image(top_images)
+
+    if highest_quality_image:
+        return send_file(highest_quality_image, as_attachment=True)
+    else:
+        return jsonify({"error": "No images found"}), 404
 if __name__ == '__main__':
     app.run(debug=True)
