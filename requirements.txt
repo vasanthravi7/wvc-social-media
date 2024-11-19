@@ -16,3 +16,9 @@ langchain-chroma
 fitz
 PyMuPDF
 streamlit
+flask
+torch
+transformers
+sentence-transformers
+scikit-learn
+Pillow
