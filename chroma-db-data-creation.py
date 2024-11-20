@@ -84,7 +84,7 @@ def extract_toc_from_pdf(pdf_path):
 
 
 # Step 2: Function to process PDF and add text to Chroma DB
-def process_pdf(pdf_path, toc_list):
+def panda_dataframe(pdf_path, toc_list):
     # Create an empty DataFrame to store the extracted content
     df = pd.DataFrame(columns=["Topic", "Content", "Start Page", "End Page"])
     
@@ -110,37 +110,40 @@ def process_pdf(pdf_path, toc_list):
         df = pd.concat([df, new_row], ignore_index=True)
 
     doc.close()
-    
-    # Text Splitter to break content into smaller chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    # print(df)
+    return df
 
-    # Chroma vector store initialization (this will store data in the directory you specify)
+# Process the DataFrame rows
+def process_row(row):
+    topic = row["Topic"]
+    content = row["Content"]
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    
+    # Split the content into chunks first
+    chunks = text_splitter.split_text(content)
+
+    # Add the topic to every chunk
+    chunks_with_topic = [f"{topic}: {chunk}" for chunk in chunks]
+
+    # Return the chunks with the topic added
+    return chunks_with_topic
+
+def dataframe_to_chunking(pdf_path,dataframe):
+    persist_directory = f"./chroma_db/{os.path.splitext(os.path.basename(pdf_path))[0]}"  # Create a folder per file
+    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+    # # Chroma vector store initialization (this will store data in the directory you specify)
     persist_directory = f"./chroma_db/{os.path.splitext(os.path.basename(pdf_path))[0]}"  # Create a folder per file
     db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
 
-    # Process the DataFrame rows and store in Chroma DB
-    def process_row(row):
-        topic = row["Topic"]
-        content = row["Content"]
-        
-        # Split the content into chunks
-        chunks = text_splitter.split_text(content)
-        
-        # Add the topic to every chunk
-        chunks_with_topic = [f"{topic}: {chunk}" for chunk in chunks]
-        
-        return chunks_with_topic
-
-    # Process each row and store results in Chroma DB
-    for idx, row in df.iterrows():
+    # Process each row in the dataframe
+    for idx, row in dataframe.iterrows():
         chunks_with_topic = process_row(row)
         
         # Store chunks with metadata (topic, pages) in Chroma
         for chunk in chunks_with_topic:
             db.add_texts([chunk], metadatas=[{"topic": row["Topic"], "start_page": row["Start Page"], "end_page": row["End Page"]}])
-
-    # Save the Chroma vector store (it persists automatically in the specified directory)
-    print(f"Chroma DB for {os.path.basename(pdf_path)} stored at: {persist_directory}")
+    # Save the Chroma vector store (No need for persist())
+    print(f"Chroma DB stored at: {persist_directory}")
 
 # Step 3: Loop through all PDF files in the 'data' folder
 data_folder = 'data'
@@ -152,11 +155,13 @@ for pdf_file in pdf_files:
     print(f"Processing {pdf_path}...")
     
     # Step 3.1: Extract TOC
-    toc_list = extract_toc_from_pdf(pdf_path)
-    print(toc_list)
+    # toc_list = extract_toc_from_pdf(pdf_path)
+    toc_list = [ ("ACKNOWLEDGEMENTS", 2, 3), ("ACRONYMS AND DEFINITIONS", 4, 4), ("LETTER FROM OUR PRESIDENT", 5, 5), ("SNAPSHOT REPORT", 6, 9), ("OUR IDENTITY AND VISION", 10, 10), ("OUR STRATEGIC APPROACH", 11, 23), ("PROGRESS AND CHANGE", 24, 25), ("Livelihoods", 26, 37), ("Health", 38, 49), ("Education", 50, 61), ("Child Protection and Participation", 62, 71), ("Water, Sanitation and Hygiene", 72, 81), ("PROGRAM FEATURES", 82, 82), ("Advocacy", 83, 86), ("Emergency Response", 87, 92), ("Climate Change", 93, 95), ("Digital Innovation", 96, 96), ("LEARNINGS", 97, 109), ("FINANCIAL ACCOUNTABILITY", 110, 112), ("APPENDICES", 113, 114) ]
+    # print(toc_list)
     if toc_list != "No":
         # Step 3.2: Process PDF and add to Chroma DB
-        process_pdf(pdf_path, toc_list)
+        dataframe = panda_dataframe(pdf_path, toc_list)
+        dataframe_to_chunking(pdf_path,dataframe)
     else:
         print(f"No TOC found in {pdf_path}, skipping...")
 
