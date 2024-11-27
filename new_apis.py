@@ -14,7 +14,11 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from PIL import Image
 import base64
+from flask_cors import CORS
+
 app = Flask(__name__)
+
+CORS(app)
 
 # Load environment variables
 load_dotenv()

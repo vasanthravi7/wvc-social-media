@@ -22,3 +22,4 @@ transformers
 sentence-transformers
 scikit-learn
 Pillow
+Flask-CORS
