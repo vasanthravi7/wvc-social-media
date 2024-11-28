@@ -45,13 +45,9 @@ else:
     embeddings = OpenAIEmbeddings()
     llm = OpenAI(max_tokens=300)
 
-# Define paths and parameters
-persistent_directory = "./chroma_db/World-Vision-Canada-FY23-Annual-Results-Report"
-chroma_db = Chroma(
-    persist_directory=persistent_directory,
-    embedding_function=embeddings
-)
-
+# Global variables for persistent_directory and chroma_db
+persistent_directory = None
+chroma_db = None
 # Custom tool for querying Chroma DB
 @tool
 def query_chroma_db(query_text: str) -> str:
@@ -166,12 +162,25 @@ def generate_blog():
     try:
         data = request.get_json()
         blog_topic = data.get('blog_topic')
+        folder_name = data.get('folder_name')
+        file_name = data.get('file_name')
 
-        if not blog_topic:
-            return jsonify({"error": "Missing 'blog_topic' parameter"}), 400
+        # Validate required parameters
+        if not blog_topic or not folder_name or not file_name:
+            return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        collection_name = persistent_directory.split('/')[-1]
-        blog_output_file = generate_output_file_path(collection_name, "blog")
+        # Initialize persistent directory and Chroma DB
+        global persistent_directory, chroma_db
+        persistent_directory = os.path.join(folder_name, file_name)
+        chroma_db = Chroma(
+            persist_directory=persistent_directory,
+            embedding_function=embeddings
+        )
+
+        # Prepare output file path
+        output_dir = "outputs"
+        os.makedirs(output_dir, exist_ok=True)  # Ensure 'outputs' directory exists
+        blog_output_file = os.path.join(output_dir, f"blog_{file_name}.txt")
         writing_task.output_file = blog_output_file
 
         # Define a specific crew for blog generation
@@ -181,9 +190,10 @@ def generate_blog():
             process=Process.sequential
         )
 
-        # Execute the blog crew
-        blog_crew.kickoff(inputs={'blog_topic': blog_topic})
+        # Execute the blog generation process
+        blog_crew.kickoff(inputs={'blog_topic': blog_topic, 'folder_name': folder_name, 'file_name': file_name})
 
+        # Verify output file existence
         if not os.path.exists(blog_output_file):
             return jsonify({"error": "Blog output file not generated"}), 500
 
@@ -194,8 +204,10 @@ def generate_blog():
             "blog_file": blog_output_file,
             "blog_content": blog_content
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/generate_instagram', methods=['POST'])
@@ -203,14 +215,16 @@ def generate_instagram():
     try:
         data = request.get_json()
         blog_topic = data.get('blog_topic')
+        folder_name = data.get('folder_name')
+        file_name = data.get('file_name')
 
-        if not blog_topic:
-            return jsonify({"error": "Missing 'blog_topic' parameter"}), 400
+        if not blog_topic or not folder_name or not file_name:
+            return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Determine file paths
-        collection_name = persistent_directory.split('/')[-1]
-        blog_output_file = generate_output_file_path(collection_name, "blog")
-        instagram_output_file = generate_output_file_path(collection_name, "instagram_post")
+    
+        # Determine file paths dynamically
+        blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
+        instagram_output_file = os.path.join("outputs", f"instagram_post_{file_name}.txt")
 
         # Check if the blog file exists
         if not os.path.exists(blog_output_file):
@@ -232,7 +246,7 @@ def generate_instagram():
         )
 
         # Execute the crew with the blog content as input
-        instagram_crew.kickoff(inputs={"blog_content": blog_content})
+        instagram_crew.kickoff(inputs={"blog_content": blog_content, 'folder_name': folder_name, 'file_name': file_name})
 
         # Check if the Instagram output file is generated
         if not os.path.exists(instagram_output_file):
@@ -256,14 +270,17 @@ def generate_linkedin():
     try:
         data = request.get_json()
         blog_topic = data.get('blog_topic')
+        folder_name = data.get('folder_name')
+        file_name = data.get('file_name')
 
-        if not blog_topic:
-            return jsonify({"error": "Missing 'blog_topic' parameter"}), 400
+        if not blog_topic or not folder_name or not file_name:
+            return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Determine file paths
-        collection_name = persistent_directory.split('/')[-1]
-        blog_output_file = generate_output_file_path(collection_name, "blog")
-        linkedin_output_file = generate_output_file_path(collection_name, "linkedin_post")
+    
+
+        # Determine file paths dynamically
+        blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
+        linkedin_output_file = os.path.join("outputs", f"linkedin_post_{file_name}.txt")
 
         # Check if the blog file exists
         if not os.path.exists(blog_output_file):
@@ -285,7 +302,7 @@ def generate_linkedin():
         )
 
         # Execute the crew with the blog content as input
-        linkedin_crew.kickoff(inputs={"blog_content": blog_content})
+        linkedin_crew.kickoff(inputs={"blog_content": blog_content, 'folder_name': folder_name, 'file_name': file_name})
 
         # Check if the LinkedIn output file is generated
         if not os.path.exists(linkedin_output_file):
@@ -401,6 +418,24 @@ def highest_quality_image():
         return jsonify({"error": "No images found"}), 404
 
 
+
+@app.route('/get_files', methods=['GET'])
+def get_files():
+    """
+    API endpoint to fetch the file collections (subfolder names) in the Chroma DB
+    for either 'local_data' or 'azure_data', and format them as '<file_name>.pdf'.
+    """
+    # Get the 'data_type' parameter from the query string
+    base_dir = request.args.get('data_type')
+    
+    
+    if not os.path.exists(base_dir):
+        return jsonify({"error": f"The folder '{base_dir}' does not exist."}), 404
+
+    # List only the top-level subfolders and append '.pdf' to represent file names
+    files = [f"{folder_name}.pdf" for folder_name in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder_name))]
+
+    return jsonify(files)
 
 if __name__ == '__main__':
     app.run(debug=True)

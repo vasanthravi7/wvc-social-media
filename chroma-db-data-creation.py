@@ -1,26 +1,26 @@
+import os
 import fitz  # PyMuPDF
 import pandas as pd
 from dotenv import load_dotenv
-import os
 import ast
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, OpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import AzureOpenAIEmbeddings,AzureChatOpenAI
 from langchain_chroma import Chroma
+
+# Load environment variables
 load_dotenv()
 
-api_type = 2 # 1 - Azure OpenAI, 2- OpenAI
+api_type = 2  # 1 - Azure OpenAI, 2 - OpenAI
 
 if api_type == 1:
-    # Load environment variables
     azure_endpoint = os.getenv("Azure_API_ENDPOINT")
     api_key = os.getenv("AZURE_API_KEY")
     api_version = "2023-03-15-preview"
     deployment_name = "gpt-4o"  # Ensure this matches your deployment name in Azure
 
-    # Initialize embeddings and model
-    embeddings = AzureOpenAIEmbeddings(azure_endpoint=azure_endpoint,api_key=api_key)
+    embeddings = AzureOpenAIEmbeddings(azure_endpoint=azure_endpoint, api_key=api_key)
     llm = AzureChatOpenAI(
         azure_endpoint=azure_endpoint,
         api_key=api_key,
@@ -35,18 +35,18 @@ else:
     llm = OpenAI(max_tokens=300)
 
 
-# Step 1: Define function to extract TOC and split text
+# Function to extract Table of Contents (TOC)
 def extract_toc_from_pdf(pdf_path):
-    # Open the PDF file
     doc = fitz.open(pdf_path)
     toc_content = ""
-    
-    # Extract text from the first 5 pages (assuming TOC is in these pages)
-    for page_num in range(5):  # First 5 pages
-        page = doc[page_num]
-        toc_content += page.get_text()
 
-    # Create the prompt template to check for a table of contents
+    for page_num in range(5):  # First 5 pages
+        try:
+            page = doc[page_num]
+            toc_content += page.get_text()
+        except IndexError:
+            break
+
     prompt_template = """
     The following text may contain a Table of Contents (TOC). Please analyze the content and determine if a TOC is present. whole toc content as below sample format. Format the start and end page number as integer. 
     Capital letters are the main headings, and lower case letters are subheadings. Titles with subheadings shouldn't be set to the same page number.
@@ -63,105 +63,118 @@ def extract_toc_from_pdf(pdf_path):
 
     Answer:
     """
-
-    # Create the PromptTemplate with the extracted TOC content
     prompt = PromptTemplate(input_variables=["toc_content"], template=prompt_template)
-
-    # Create an LLMChain with the prompt and model
     chain = prompt | llm
 
-    # Run the chain with the extracted TOC content
-    response = chain.invoke({"toc_content": toc_content})
-    print(response)
-    if api_type == 1:
-        toc_content = response.content
-    else:
-        toc_content = response
-    toc_list = ast.literal_eval(toc_content)
-    doc.close()
-    
+    try:
+        response = chain.invoke({"toc_content": toc_content})
+        toc_list = ast.literal_eval(response)
+    except Exception as e:
+        print(f"Error parsing TOC content: {e}")
+        toc_list = "No"
+    finally:
+        doc.close()
+
     return toc_list
 
 
-# Step 2: Function to process PDF and add text to Chroma DB
+# Function to process PDF and create a DataFrame
 def panda_dataframe(pdf_path, toc_list):
-    # Create an empty DataFrame to store the extracted content
     df = pd.DataFrame(columns=["Topic", "Content", "Start Page", "End Page"])
-    
-    # Open the PDF file
     doc = fitz.open(pdf_path)
-    
-    # Extract content based on TOC
+
     for topic, start_page, end_page in toc_list:
         content = ""
         for page_num in range(start_page - 1, end_page):  # Page numbering in PyMuPDF starts at 0
-            page = doc[page_num]
-            content += page.get_text()  # Extract text from the page and accumulate for the topic
-        
-        # Create a new DataFrame row with the topic, content, start and end page
+            try:
+                page = doc[page_num]
+                content += page.get_text()
+            except IndexError:
+                break
+
         new_row = pd.DataFrame({
             "Topic": [topic],
             "Content": [content],
             "Start Page": [start_page],
             "End Page": [end_page]
         })
-        
-        # Append the new row using pd.concat
         df = pd.concat([df, new_row], ignore_index=True)
 
     doc.close()
-    # print(df)
     return df
 
-# Process the DataFrame rows
+
+# Function to split text into chunks
 def process_row(row):
     topic = row["Topic"]
     content = row["Content"]
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    
-    # Split the content into chunks first
     chunks = text_splitter.split_text(content)
+    return [f"{topic}: {chunk}" for chunk in chunks]
 
-    # Add the topic to every chunk
-    chunks_with_topic = [f"{topic}: {chunk}" for chunk in chunks]
 
-    # Return the chunks with the topic added
-    return chunks_with_topic
-
-def dataframe_to_chunking(pdf_path,dataframe):
-    persist_directory = f"./chroma_db/{os.path.splitext(os.path.basename(pdf_path))[0]}"  # Create a folder per file
-    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
-    # # Chroma vector store initialization (this will store data in the directory you specify)
-    persist_directory = f"./chroma_db/{os.path.splitext(os.path.basename(pdf_path))[0]}"  # Create a folder per file
+# Function to save text chunks to Chroma DB
+def dataframe_to_chunking(pdf_path, dataframe, chroma_folder):
+    file_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    persist_directory = os.path.join(chroma_folder, file_name)  # Create a folder per file
     db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
 
-    # Process each row in the dataframe
     for idx, row in dataframe.iterrows():
         chunks_with_topic = process_row(row)
-        
-        # Store chunks with metadata (topic, pages) in Chroma
         for chunk in chunks_with_topic:
-            db.add_texts([chunk], metadatas=[{"topic": row["Topic"], "start_page": row["Start Page"], "end_page": row["End Page"]}])
-    # Save the Chroma vector store (No need for persist())
+            db.add_texts([chunk], metadatas=[{
+                "topic": row["Topic"],
+                "start_page": row["Start Page"],
+                "end_page": row["End Page"]
+            }])
     print(f"Chroma DB stored at: {persist_directory}")
 
-# Step 3: Loop through all PDF files in the 'data' folder
-data_folder = 'data'
-pdf_files = [f for f in os.listdir(data_folder) if f.endswith('.pdf')]
 
-# Process each PDF file
-for pdf_file in pdf_files:
-    pdf_path = os.path.join(data_folder, pdf_file)
-    print(f"Processing {pdf_path}...")
-    
-    # Step 3.1: Extract TOC
-    # toc_list = extract_toc_from_pdf(pdf_path)
-    toc_list = [ ("ACKNOWLEDGEMENTS", 2, 3), ("ACRONYMS AND DEFINITIONS", 4, 4), ("LETTER FROM OUR PRESIDENT", 5, 5), ("SNAPSHOT REPORT", 6, 9), ("OUR IDENTITY AND VISION", 10, 10), ("OUR STRATEGIC APPROACH", 11, 23), ("PROGRESS AND CHANGE", 24, 25), ("Livelihoods", 26, 37), ("Health", 38, 49), ("Education", 50, 61), ("Child Protection and Participation", 62, 71), ("Water, Sanitation and Hygiene", 72, 81), ("PROGRAM FEATURES", 82, 82), ("Advocacy", 83, 86), ("Emergency Response", 87, 92), ("Climate Change", 93, 95), ("Digital Innovation", 96, 96), ("LEARNINGS", 97, 109), ("FINANCIAL ACCOUNTABILITY", 110, 112), ("APPENDICES", 113, 114) ]
-    # print(toc_list)
-    if toc_list != "No":
-        # Step 3.2: Process PDF and add to Chroma DB
-        dataframe = panda_dataframe(pdf_path, toc_list)
-        dataframe_to_chunking(pdf_path,dataframe)
-    else:
-        print(f"No TOC found in {pdf_path}, skipping...")
+# Function to process text without TOC
+def text_to_chunks(pdf_path, chroma_folder):
+    doc = fitz.open(pdf_path)
+    content = ""
+    for page_num in range(len(doc)):
+        content += doc[page_num].get_text()
 
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = text_splitter.split_text(content)
+
+    file_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    persist_directory = os.path.join(chroma_folder, file_name)  # Create a folder per file
+    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+
+    for chunk in chunks:
+        db.add_texts([chunk], metadatas={"file_name": file_name})
+    print(f"Chroma DB stored at: {persist_directory}")
+
+
+# Main processing function
+def process_folder(folder_path, chroma_folder):
+    pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf')]
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(folder_path, pdf_file)
+        print(f"Processing {pdf_path}...")
+
+        toc_list = extract_toc_from_pdf(pdf_path)
+        if toc_list != "No":
+            dataframe = panda_dataframe(pdf_path, toc_list)
+            dataframe_to_chunking(pdf_path, dataframe, chroma_folder)
+        else:
+            text_to_chunks(pdf_path, chroma_folder)
+
+
+# Directories for local and Azure data
+local_data_folder = "local_data"
+azure_data_folder = "Azure_data"
+
+# Output folders for Chroma DB
+local_chroma_folder = "local_chroma_db"
+azure_chroma_folder = "azure_chroma_db"
+
+# Process both folders
+print("Processing local data...")
+process_folder(local_data_folder, local_chroma_folder)
+
+print("Processing Azure data...")
+process_folder(azure_data_folder, azure_chroma_folder)
