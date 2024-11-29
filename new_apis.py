@@ -24,6 +24,9 @@ CORS(app)
 # Load environment variables
 load_dotenv()
 
+# Global variable to store ChromaDB instance
+chroma_db_instance = None
+
 # API Type Configuration
 api_type = 2  # 1 - Azure OpenAI, 2 - OpenAI
 
@@ -46,19 +49,46 @@ else:
     embeddings = OpenAIEmbeddings()
     llm = OpenAI(max_tokens=300)
 
-# Global variables for persistent_directory and chroma_db
-persistent_directory = None
-chroma_db = None
-# Custom tool for querying Chroma DB
+# Define a function to initialize and store the ChromaDB instance
+def init_chroma_db(folder_name: str, file_name: str):
+    global chroma_db_instance
+    # Define the persistent directory where ChromaDB data will be stored
+    persistent_directory = os.path.join(folder_name, file_name)
+    
+    if chroma_db_instance is None:
+        chroma_db_instance = Chroma(
+            persist_directory=persistent_directory,
+            embedding_function=embeddings
+        )
+        print(f"Initialized ChromaDB at {persistent_directory}")
+    else:
+        print(f"Using existing ChromaDB instance at {persistent_directory}")
+    
+    return chroma_db_instance
+
+# Custom tool for querying ChromaDB
 @tool
-def query_chroma_db(query_text: str) -> str:
+def query_chroma_db(query_text: str, folder_name: str, file_name: str) -> str:
     """
     Retrieves relevant chunks from Chroma DB using a semantic search
     based on the input query_text.
     """
+    # Initialize ChromaDB (or reuse existing)
+    chroma_db = init_chroma_db(folder_name, file_name)
     results = chroma_db.similarity_search(query_text, k=10)
     formatted_results = "\n\n".join([doc.page_content for doc in results if hasattr(doc, 'page_content')])
     return formatted_results
+
+# Helper function: Generate output file path
+def generate_output_file_path(collection_name: str, file_type: str) -> str:
+    return os.path.join("outputs", f"{file_type}_{collection_name}.txt")
+
+# Helper function: Read file content
+def read_file_content(file_path: str) -> str:
+    if os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    return None
 
 # Define Agents
 # Data Retrieval Agent
@@ -144,19 +174,6 @@ crew = Crew(
     process=Process.sequential
 )
 
-# Helper Function: Generate File Path
-def generate_output_file_path(collection_name: str, file_type: str) -> str:
-    return os.path.join("outputs", f"{file_type}_{collection_name}.txt")
-
-
-# Helper Function: Read File Content
-def read_file_content(file_path: str) -> str:
-    if os.path.exists(file_path):
-        with open(file_path, 'r', encoding='utf-8') as file:
-            return file.read()
-    return None
-
-
 # API: Generate Blog
 @app.route('/generate_blog', methods=['POST'])
 def generate_blog():
@@ -166,17 +183,11 @@ def generate_blog():
         folder_name = data.get('folder_name')
         file_name = data.get('file_name')
 
-        # Validate required parameters
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Initialize persistent directory and Chroma DB
-        global persistent_directory, chroma_db
-        persistent_directory = os.path.join(folder_name, file_name)
-        chroma_db = Chroma(
-            persist_directory=persistent_directory,
-            embedding_function=embeddings
-        )
+        # Initialize ChromaDB
+        chroma_db = init_chroma_db(folder_name, file_name)
 
         # Prepare output file path
         output_dir = "outputs"
@@ -210,7 +221,7 @@ def generate_blog():
         return jsonify({"error": str(e)}), 500
 
 
-
+# API: Generate Instagram Post
 @app.route('/generate_instagram', methods=['POST'])
 def generate_instagram():
     try:
@@ -222,7 +233,9 @@ def generate_instagram():
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-    
+        # Initialize ChromaDB
+        chroma_db = init_chroma_db(folder_name, file_name)
+
         # Determine file paths dynamically
         blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
         instagram_output_file = os.path.join("outputs", f"instagram_post_{file_name}.txt")
@@ -277,7 +290,8 @@ def generate_linkedin():
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-    
+        # Initialize ChromaDB
+        chroma_db = init_chroma_db(folder_name, file_name)
 
         # Determine file paths dynamically
         blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
