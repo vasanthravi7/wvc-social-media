@@ -15,6 +15,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from PIL import Image
 import base64
 from flask_cors import CORS
+from os import scandir
 
 app = Flask(__name__)
 
@@ -422,18 +423,15 @@ def highest_quality_image():
 @app.route('/get_files', methods=['GET'])
 def get_files():
     """
-    API endpoint to fetch the file collections (subfolder names) in the Chroma DB
-    for either 'local_data' or 'azure_data', and format them as '<file_name>.pdf'.
+    Optimized API endpoint to fetch file collections.
     """
-    # Get the 'data_type' parameter from the query string
     base_dir = request.args.get('data_type')
-    
-    
+
     if not os.path.exists(base_dir):
         return jsonify({"error": f"The folder '{base_dir}' does not exist."}), 404
 
-    # List only the top-level subfolders and append '.pdf' to represent file names
-    files = [f"{folder_name}.pdf" for folder_name in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder_name))]
+    # Use scandir to iterate through directories faster
+    files = [f"{entry.name}.pdf" for entry in scandir(base_dir) if entry.is_dir()]
 
     return jsonify(files)
 
