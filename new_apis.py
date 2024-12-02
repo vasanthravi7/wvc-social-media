@@ -49,7 +49,8 @@ else:
     embeddings = OpenAIEmbeddings()
     llm = OpenAI(max_tokens=300)
 
-# Define a function to initialize and store the ChromaDB instance
+
+# Chroma initialization function
 def init_chroma_db(folder_name: str, file_name: str):
     global chroma_db_instance
     # Define the persistent directory where ChromaDB data will be stored
@@ -74,8 +75,8 @@ def query_chroma_db(query_text: str, folder_name: str, file_name: str) -> str:
     based on the input query_text.
     """
     # Initialize ChromaDB (or reuse existing)
-    chroma_db = init_chroma_db(folder_name, file_name)
-    results = chroma_db.similarity_search(query_text, k=10)
+    # chroma_db = init_chroma_db(folder_name, file_name)
+    results = chroma_db_instance.similarity_search(query_text, k=10)
     formatted_results = "\n\n".join([doc.page_content for doc in results if hasattr(doc, 'page_content')])
     return formatted_results
 
@@ -182,12 +183,10 @@ def generate_blog():
         blog_topic = data.get('blog_topic')
         folder_name = data.get('folder_name')
         file_name = data.get('file_name')
-
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Initialize ChromaDB
-        chroma_db = init_chroma_db(folder_name, file_name)
+        
 
         # Prepare output file path
         output_dir = "outputs"
@@ -233,8 +232,7 @@ def generate_instagram():
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Initialize ChromaDB
-        chroma_db = init_chroma_db(folder_name, file_name)
+       
 
         # Determine file paths dynamically
         blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
@@ -290,8 +288,7 @@ def generate_linkedin():
         if not blog_topic or not folder_name or not file_name:
             return jsonify({"error": "Missing 'blog_topic', 'folder_name', or 'file_name' parameter"}), 400
 
-        # Initialize ChromaDB
-        chroma_db = init_chroma_db(folder_name, file_name)
+        
 
         # Determine file paths dynamically
         blog_output_file = os.path.join("outputs", f"blog_{file_name}.txt")
@@ -448,6 +445,26 @@ def get_files():
     files = [f"{entry.name}.pdf" for entry in scandir(base_dir) if entry.is_dir()]
 
     return jsonify(files)
+
+# API endpoint to load ChromaDB
+@app.route('/load_chroma', methods=['POST'])
+def load_chroma():
+    try:
+        # Get the folder_name and file_name from the request body
+        data = request.json
+        folder_name = data.get('folder_name')
+        file_name = data.get('file_name')
+        
+        if not folder_name or not file_name:
+            return jsonify({"error": "folder_name and file_name are required"}), 400
+        
+        # Initialize ChromaDB
+        chroma_db = init_chroma_db(folder_name, file_name)
+        
+        return jsonify({"message": f"ChromaDB initialized at {folder_name}/{file_name}"}), 200
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
