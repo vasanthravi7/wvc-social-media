@@ -16,8 +16,12 @@ from PIL import Image
 import base64
 from flask_cors import CORS
 from os import scandir
+import requests
+import json
 
 app = Flask(__name__)
+
+linkedin_access_token = os.getenv("LINKEDIN_ACCESS_TOKEN")
 
 CORS(app)
 
@@ -463,6 +467,118 @@ def load_chroma():
         
         return jsonify({"message": f"ChromaDB initialized at {folder_name}/{file_name}"}), 200
     
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def post_to_linkedin_api(linkedin_post_content=None, linkedin_post_image_base64=None):
+    api_url = 'https://api.linkedin.com/v2/ugcPosts'
+    access_token = linkedin_access_token
+
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'X-Restli-Protocol-Version': '2.0.0'
+    }
+
+    # Fetch user information to get the LinkedIn URN (unique identifier for the user)
+    response = requests.get('https://api.linkedin.com/v2/userinfo', headers=headers)
+    if response.status_code == 200:
+        user_info = response.json()
+        urn = user_info.get('sub')  # User's LinkedIn URN
+    else:
+        return {"error": f"Failed to fetch user info: {response.status_code}, {response.text}"}
+
+    author = f'urn:li:person:{urn}'
+
+    # Base structure for the LinkedIn post
+    post_data = {
+        "author": author,
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {
+                    "text": linkedin_post_content if linkedin_post_content else ''  # Default to empty text
+                },
+                "shareMediaCategory": "NONE"  # Default to no media
+            }
+        },
+        "visibility": {
+            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"  # Visible to everyone
+        }
+    }
+
+    # Handle image upload if provided
+    if linkedin_post_image_base64:
+        # Decode the Base64 image string
+        linkedin_post_image_binary = base64.b64decode(linkedin_post_image_base64)
+
+        # Step 1: Register the upload URL with LinkedIn
+        media_upload_url = 'https://api.linkedin.com/v2/assets?action=registerUpload'
+        image_upload_request_data = {
+            "registerUploadRequest": {
+                "owner": author,
+                "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+                "serviceRelationships": [
+                    {
+                        "identifier": "urn:li:userGeneratedContent",
+                        "relationshipType": "OWNER"
+                    }
+                ],
+                "supportedUploadMechanism": ["SYNCHRONOUS_UPLOAD"]
+            }
+        }
+
+        upload_response = requests.post(media_upload_url, headers=headers, json=image_upload_request_data)
+        if upload_response.status_code == 200:
+            upload_info = upload_response.json()
+            upload_url = upload_info['value']['uploadMechanism']['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']['uploadUrl']
+            asset_urn = upload_info['value']['asset']
+
+            # Step 2: Upload the binary image to LinkedIn
+            image_headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/octet-stream'
+            }
+            image_upload_response = requests.post(upload_url, headers=image_headers, data=linkedin_post_image_binary)
+            if image_upload_response.status_code == 201:
+                # Add the uploaded image to the post
+                post_data["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "IMAGE"
+                post_data["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{
+                    "status": "READY",
+                    "media": asset_urn,
+                    "title": {
+                        "text": "Uploaded Image"
+                    }
+                }]
+            else:
+                return {"error": f"Failed to upload image: {image_upload_response.status_code}, {image_upload_response.text}"}
+        else:
+            return {"error": f"Failed to register image upload: {upload_response.status_code}, {upload_response.text}"}
+
+    # Step 3: Post the content to LinkedIn
+    post_response = requests.post(api_url, headers=headers, data=json.dumps(post_data))
+    if post_response.status_code == 201:
+        return {"message": "Post published to LinkedIn successfully!"}
+    else:
+        return {"error": f"Failed to post to LinkedIn: {post_response.status_code}, {post_response.text}"}
+
+@app.route('/post_to_linkedin', methods=['POST'])
+def post_to_linkedin():
+    """
+    API endpoint to handle posting content (with optional image) to LinkedIn.
+    Expects a JSON payload:
+    {
+        "content": "Post content",
+        "image": "Base64EncodedImageString"
+    }
+    """
+    try:
+        data = request.get_json()
+        content = data.get('content', None)
+        image_base64 = data.get('image', None)
+
+        result = post_to_linkedin_api(linkedin_post_content=content, linkedin_post_image_base64=image_base64)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
